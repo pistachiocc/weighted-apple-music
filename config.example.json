@@ -1,0 +1,12 @@
+{
+  "playlist_name": "YOUR_PLAYLIST_NAME",
+  "default_weight": 10,
+  "artist_weights": {
+    "Artist Name": 3
+  },
+  "track_weights": {
+    "Track Name": 5
+  },
+  "avoid_immediate_repeat": true,
+  "check_interval": 0.2
+}
