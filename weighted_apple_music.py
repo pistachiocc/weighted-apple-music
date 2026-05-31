@@ -10,6 +10,7 @@ from pathlib import Path
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
 CACHE_PATH = Path(__file__).with_name("tracks_cache.json")
+HISTORY_LIMIT = 20
 
 DEFAULT_CONFIG = {
     "playlist_name": "",
@@ -246,7 +247,7 @@ def toggle_pause_or_resume(track, manually_stopped):
     else:
         resume_music()
 
-    print(f"再生再開: {track['artist']} - {track['name']}")
+    print(f"再生再開: {format_track(track)}")
     return False
 
 
@@ -331,7 +332,19 @@ def find_requested_track(tracks, query, last_id=None):
         if t["name"].casefold() == query
     ]
     if exact_name_matches:
-        return choose_track_from_matches(exact_name_matches, last_id), exact_name_matches
+        version_separators = (" ", "-", "(", "[", "{", ":", "（", "［", "｛", "：")
+        related_name_matches = []
+
+        for track in tracks:
+            name = track["name"].casefold()
+            if name == query:
+                related_name_matches.append(track)
+                continue
+
+            if name.startswith(query) and name[len(query):].startswith(version_separators):
+                related_name_matches.append(track)
+
+        return choose_track_from_matches(related_name_matches, last_id), related_name_matches
 
     exact_artist_matches = [
         t for t in tracks
@@ -374,15 +387,64 @@ def find_track_by_id(tracks, track_id):
     return None
 
 
+def format_track(track):
+    return f"{track['artist']} - {track['name']}"
+
+
+def add_history(history, track):
+    history.append({
+        "id": track["id"],
+        "name": track["name"],
+        "artist": track["artist"],
+    })
+
+    if len(history) > HISTORY_LIMIT:
+        del history[:-HISTORY_LIMIT]
+
+
+def print_history(history):
+    if not history:
+        print("再生履歴はまだありません。")
+        return
+
+    print("直近の再生履歴:")
+    for number, track in enumerate(reversed(history), start=1):
+        print(f"  {number}. {format_track(track)}")
+
+
+def print_track_choices(matches):
+    print(f"{len(matches)}件の候補があります。番号を入力してください。")
+    for number, track in enumerate(matches, start=1):
+        print(f"  {number}. {format_track(track)}")
+    print("  0. キャンセル")
+
+
+def choose_track_by_number(matches, command):
+    try:
+        number = int(command.strip())
+    except ValueError:
+        return None, False
+
+    if number == 0:
+        return None, True
+
+    if 1 <= number <= len(matches):
+        return matches[number - 1], True
+
+    return None, False
+
+
 def print_help():
     print("操作:")
     print("  n                    次の曲へ")
     print("  p                    一時停止 / 再開")
     print("  stop                 再生停止")
     print("  current              再生中の曲を表示")
+    print("  history              直近に再生した曲を表示")
     print("  reload               曲リストを更新")
     print("  :曲名                曲を指定")
     print("  :アーティスト - 曲名  曲を指定")
+    print("  候補番号              複数候補から曲を選択")
     print("  Ctrl + C             終了")
     print("")
     print("起動時に曲リストを更新したいときは --reload を付けてください。")
@@ -404,6 +466,7 @@ def main():
     last_id = None
     requested_track = None
     manually_stopped = False
+    history = []
 
     while True:
         if requested_track is not None:
@@ -412,13 +475,15 @@ def main():
         else:
             picked = pick_track(tracks, last_id)
 
-        print(f"再生: {picked['artist']} - {picked['name']}")
+        print(f"再生: {format_track(picked)}")
 
         play_track(picked)
+        add_history(history, picked)
         last_id = picked["id"]
         last_position = None
         has_seen_current_track = False
         manually_stopped = False
+        pending_matches = None
 
         while True:
             time.sleep(CHECK_INTERVAL)
@@ -433,7 +498,11 @@ def main():
                     continue
 
                 if normalized_command in {"c", "cur", "current", "now"}:
-                    print(f"再生中: {picked['artist']} - {picked['name']}")
+                    print(f"再生中: {format_track(picked)}")
+                    continue
+
+                if normalized_command in {"history", "hist", "履歴"}:
+                    print_history(history)
                     continue
 
                 if normalized_command in {"reload", "refresh"}:
@@ -443,6 +512,7 @@ def main():
                         continue
 
                     tracks = new_tracks
+                    pending_matches = None
                     updated_picked = find_track_by_id(tracks, picked["id"])
                     if updated_picked is not None:
                         picked = updated_picked
@@ -450,7 +520,7 @@ def main():
                     print(f"{len(tracks)}曲を読み込み直しました。")
                     continue
 
-                if normalized_command in {"n", "next", "次"}:
+                if normalized_command in {"ㅜ", "n", "next", "次"}:
                     break
 
                 if normalized_command in {"p", "pause", "一時停止"}:
@@ -463,7 +533,7 @@ def main():
                     else:
                         resume_music()
                     manually_stopped = False
-                    print(f"再生再開: {picked['artist']} - {picked['name']}")
+                    print(f"再生再開: {format_track(picked)}")
                     continue
 
                 if normalized_command in {"s", "stop", "停止", "ストップ"}:
@@ -471,6 +541,28 @@ def main():
                     manually_stopped = True
                     print("停止中。再開するには p または play を入力してください。")
                     continue
+
+                if pending_matches is not None and track_query is None:
+                    if normalized_command in {"cancel", "cxl", "キャンセル"}:
+                        pending_matches = None
+                        print("選択をキャンセルしました。")
+                        continue
+
+                    selected_track, handled = choose_track_by_number(pending_matches, command)
+
+                    if not handled:
+                        print("候補の番号を入力してください。キャンセルする場合は 0 を入力してください。")
+                        continue
+
+                    pending_matches = None
+
+                    if selected_track is None:
+                        print("選択をキャンセルしました。")
+                        continue
+
+                    requested_track = selected_track
+                    print(f"次に指定: {format_track(requested_track)}")
+                    break
 
                 if track_query is None:
                     print(f"不明なコマンドです: {command}")
@@ -488,9 +580,12 @@ def main():
                     continue
 
                 if len(matches) > 1:
-                    print(f"{len(matches)}件の候補から選択: {requested_track['artist']} - {requested_track['name']}")
-                else:
-                    print(f"次に指定: {requested_track['artist']} - {requested_track['name']}")
+                    requested_track = None
+                    pending_matches = matches
+                    print_track_choices(matches)
+                    continue
+
+                print(f"次に指定: {format_track(requested_track)}")
 
                 break
 
